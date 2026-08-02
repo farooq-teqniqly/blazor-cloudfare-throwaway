@@ -15,6 +15,9 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # wrangler.jsonc names a single fixed Worker, so a dispatch from a feature branch
+    # would overwrite the production deployment. Only main may deploy.
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +34,9 @@ jobs:
         run: rm -f WorkoutSpike/bin/Release/net10.0/publish/wwwroot/_redirects
 
       - name: Deploy
-        uses: cloudflare/wrangler-action@v3
+        # Pinned to a SHA rather than a floating tag: this is the step that handles the
+        # Cloudflare API token. SHA is the v3 tag as of 2026-08-02.
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
