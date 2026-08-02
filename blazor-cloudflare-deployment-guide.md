@@ -170,6 +170,8 @@ Add to your `.csproj` so publish-then-deploy is one command:
 
 Or just keep a shell script. Either beats retyping two commands.
 
+For deploying from CI instead of your machine, see Part 6. Do that after the manual loop works -- the same reasoning as trimming, below.
+
 ---
 
 ## Part 3 — Lock it down with Access
@@ -285,6 +287,128 @@ The sharpest single signal: **if navigation requests fail while every other requ
 
 ---
 
+## Part 6 — Deploy from GitHub Actions
+
+Follows Cloudflare's [GitHub Actions guide](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/), with the Blazor-specific parts filled in. Do this only once the manual `dotnet publish && wrangler deploy` loop works -- CI turns a 30-second local iteration into a 3-minute one, which is a bad way to debug a deployment you have never seen succeed.
+
+### Step 6.1: Create a scoped API token
+
+`wrangler login` gave your machine an OAuth session. CI cannot use that; it needs an API token.
+
+Cloudflare dashboard -> **My Profile** -> **API Tokens** -> **Create Token** -> **Edit Cloudflare Workers** template. Under **Account Resources**, restrict it to the one account you deploy to.
+
+The template is broader than this app needs. For a static-asset Worker with no `main`, no KV/D1/R2 bindings, and no custom domain, the minimum is a single account-scoped permission:
+
+| Scope   | Permission      | Access |
+| ------- | --------------- | ------ |
+| Account | Workers Scripts | Edit   |
+
+Why the rest of the template is not needed here:
+
+- **Account Settings / Memberships / User Details (Read)** exist so Wrangler can work out which account to use. The workflow passes `accountId` explicitly, so that lookup never happens
+- **Workers KV Storage (Edit)** was required by the old Workers Sites path, which uploaded assets into a KV namespace. Workers static assets do not use KV
+- **Workers Routes (zone-scoped)** matters only once you attach a custom domain. Add it, plus Zone -> Zone Read, when you move off `*.workers.dev`
+
+If a minimal token fails with a 403 during the asset upload rather than the script upload, fall back to the template -- Cloudflare documents the template, not the granular set, so the minimal list above is inference rather than something they promise.
+
+### Step 6.2: Add the repository secrets
+
+GitHub repo -> **Settings** -> **Secrets and variables** -> **Actions**:
+
+- `CLOUDFLARE_API_TOKEN` -- the token from Step 6.1
+- `CLOUDFLARE_ACCOUNT_ID` -- from `wrangler whoami`, or the Workers & Pages overview page
+
+The account ID is not a credential; it grants nothing without a token. It is a secret here only to keep it out of logs.
+
+### Step 6.3: Add the workflow
+
+`.github/workflows/deploy.yml`, at the **repository** root -- not next to the `.csproj`:
+
+```yaml
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-workers
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # wrangler.jsonc names a single fixed Worker, so a dispatch from a feature branch
+    # would overwrite the production deployment. Only main may deploy.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish
+        run: dotnet publish WorkoutSpike/WorkoutSpike.csproj -c Release
+
+      # A stale _redirects left in publish/wwwroot from an earlier build would fail the
+      # asset validator ("Infinite loop detected") against not_found_handling.
+      - name: Remove stray _redirects
+        run: rm -f WorkoutSpike/bin/Release/net10.0/publish/wwwroot/_redirects
+
+      - name: Deploy
+        # Pinned to a SHA rather than a floating tag: this is the step that handles the
+        # Cloudflare API token. SHA is the v3 tag as of 2026-08-02.
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: WorkoutSpike
+```
+
+The load-bearing details:
+
+- **`workingDirectory: WorkoutSpike`** is what makes `wrangler.jsonc` the single source of deployment config. Wrangler runs from the project directory and reads the same file you use locally, so `assets.directory`, `not_found_handling`, and `html_handling` are not restated in the workflow. Nothing here can drift out of sync with a local deploy
+- **`if: github.ref == 'refs/heads/main'`** exists because `wrangler.jsonc` names one fixed Worker. Without the gate, a manual dispatch from a feature branch silently overwrites production with unmerged code. Only users with write access can dispatch, so this is a footgun rather than an access-control hole -- but it is a cheap one to remove
+- **`concurrency`** serializes deploys. `cancel-in-progress: false` is deliberate: canceling a deploy mid-asset-upload is worse than queuing behind it
+- **`permissions: contents: read`** drops the default write token. The job only reads the repo; Cloudflare auth is the secret, not the GitHub token
+- **The SHA pin** on `wrangler-action` is the one action receiving your Cloudflare token, so a moved tag has the largest blast radius. Re-resolve with `gh api repos/cloudflare/wrangler-action/git/ref/tags/v3 --jq .object.sha`, or point Dependabot at the workflow
+- **The `_redirects` cleanup** is belt-and-suspenders. A CI checkout starts clean, so the stale-copy problem from Step 1.4 cannot happen here -- the step is there so that a local `publish` folder restored from a cache never reintroduces it. `rm -f` exits 0 when the file is absent, so it is a no-op in the normal case
+
+### Step 6.4: The dispatch trap
+
+`workflow_dispatch` **cannot run until the workflow file is on the default branch.** Until it lands on `main`, the API returns:
+
+```text
+HTTP 404: Not Found (…/actions/workflows/deploy.yml)
+```
+
+and the workflow does not appear in the Actions tab at all. This defeats the obvious plan of validating the token on a branch before merging. Combined with the `main` gate in Step 6.3, a branch dispatch would be skipped anyway.
+
+So the first real run **is the merge to `main`**. Budget for that: it is also the first test of whether your token scope is right.
+
+If you would rather not have production be the first test, temporarily add your branch to the push trigger, let it deploy, then remove it before merge:
+
+```yaml
+on:
+  push:
+    branches: [main, my-branch] # temporary
+```
+
+Note that this deploys to the same Worker, since `wrangler.jsonc` names only one. It proves the credentials work; it does not give you an isolated environment.
+
+### Step 6.5: What CI does not change
+
+The service worker story in Part 5 is unaffected. A green Actions run means Cloudflare has the new bytes -- it says nothing about what your browser will show you. When a CI deploy appears not to have taken, check the marker string from Step 1.3 in a browser whose site data you just cleared, before you go looking at the workflow.
+
+Also worth knowing: `.wrangler/` in the project directory is machine-local state, including a cached account ID. Add it to `.gitignore`. A local `wrangler deploy` creates it, and it is easy to commit by accident.
+
+---
+
 ## Troubleshooting
 
 | Symptom                                                                       | Cause                                                                                         | Fix                                                                                                                        |
@@ -297,6 +421,9 @@ The sharpest single signal: **if navigation requests fail while every other requ
 | Deploy uploads almost nothing                                                 | `assets.directory` wrong                                                                      | Must point at `publish/wwwroot`, not `publish` or `wwwroot`                                                                |
 | Site loads without login prompt                                               | Testing in an already-authenticated browser                                                   | Use incognito                                                                                                              |
 | Very slow first load                                                          | Full .NET runtime download                                                                    | Expected. See optimization below                                                                                           |
+| `gh workflow run` returns `HTTP 404` for a workflow that exists               | `workflow_dispatch` requires the file on the default branch                                   | Merge to `main` first (Step 6.4), or add the branch to the push trigger temporarily                                        |
+| Actions run is green but the job says "skipped"                               | The `main`-only gate, on a dispatch from another ref                                          | Expected. Only `main` deploys (Step 6.3)                                                                                   |
+| CI deploy fails with 403 from Cloudflare                                      | API token scope too narrow, or scoped to the wrong account                                    | Re-create with the **Edit Cloudflare Workers** template, restricted to one account (Step 6.1)                              |
 
 ---
 
@@ -323,6 +450,7 @@ Do this _after_ everything works. Trimming can break reflection-based code in wa
 - That URL gated by Access — email verification required, covering every asset
 - The app installed on your phone, working offline
 - A two-command deploy loop: `dotnet publish -c Release && wrangler deploy`
+- The same loop running in GitHub Actions on every push to `main`
 
 Once this is working with the throwaway app, the real one is the same pipeline with different content. That's the point of doing it first — when the workout app misbehaves, you'll know it's the app, not the hosting.
 
