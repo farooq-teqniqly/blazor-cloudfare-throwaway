@@ -3,6 +3,11 @@
   "compatibility_date": "2026-08-01",
   "assets": {
     "directory": "./bin/Release/net10.0/publish/wwwroot",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // Without this, /index.html 307-redirects to /. Blazor's service worker caches the
+    // shell under the key "index.html", and a redirected Response cannot legally be
+    // returned from respondWith() for a navigation request -- Chrome fails it with
+    // ERR_FAILED until you hard-refresh past the service worker.
+    "html_handling": "none"
   }
 }

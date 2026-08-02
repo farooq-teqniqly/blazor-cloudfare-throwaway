@@ -111,7 +111,8 @@ Create `wrangler.jsonc` in the **project root** (next to the `.csproj`, not insi
   "compatibility_date": "2026-08-01",
   "assets": {
     "directory": "./bin/Release/net10.0/publish/wwwroot",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "html_handling": "none"
   }
 }
 ```
@@ -122,6 +123,27 @@ Notes on each field:
 - **`compatibility_date`** pins runtime behavior. Set it to today's date and leave it alone. Bumping it later opts into behavior changes, which is a deliberate act, not a routine update
 - **`assets.directory`** replaces what Pages called the "build output directory"
 - **`not_found_handling`** is the Workers-native SPA fallback: any path that doesn't match a physical asset is served `index.html`, and Blazor's router takes it from there. This is the *only* place SPA routing gets configured — it is not belt-and-suspenders with a `_redirects` catch-all, because that combination doesn't deploy at all (Step 1.4)
+- **`html_handling`** is not optional for a Blazor PWA. Read the next section before you skip it
+
+#### Why `html_handling: "none"` is mandatory here
+
+By default, Workers static assets "prettifies" URLs: a request for `/index.html` gets a **307 redirect to `/`**. Harmless for most sites. For a Blazor PWA it is fatal, and the failure looks nothing like its cause.
+
+`service-worker.published.js` caches the app shell under the literal key `index.html`. With the redirect in place, the cached `Response` is a *followed* redirect — `redirected: true`. On every subsequent navigation the service worker hands that response to `event.respondWith()`, and the browser rejects it: a redirected response may not be returned for a navigation request. The navigation dies with **`ERR_FAILED`**.
+
+The symptom that makes this hard to place:
+
+- Open the site in a new tab → `ERR_FAILED`
+- Press **Ctrl+F5** → the app loads fine
+- Open it normally again → `ERR_FAILED` again
+
+Ctrl+F5 bypasses the service worker, so the hard reload succeeds and everything in between fails. It reads like a caching problem, and every caching remedy appears to work exactly once.
+
+Setting `html_handling` to `"none"` disables the redirect. `/index.html` then returns 200 directly, the service worker caches an unredirected response, and normal navigation works. Deep links are unaffected — `not_found_handling` is a separate mechanism and still serves the shell for `/counter` and friends.
+
+This is the same `.html`/`/index` stripping that rejects the `_redirects` catch-all in Step 1.4. One feature, two unrelated-looking failures.
+
+> **After deploying the fix, clear site data once per browser.** The bad cache entry does not heal on its own: `service-worker.js` is byte-identical across the fix, so the browser sees no update and never re-runs `install`. DevTools → Application → Storage → **Clear site data**, then reload.
 
 There's no `main` field. That's intentional: without one, this is a pure static asset deployment with no Worker script. You'd add `main` only if you later wanted server-side logic, which this app doesn't need.
 
@@ -184,9 +206,11 @@ Open your URL in a **private/incognito window**. You should get Cloudflare's log
 
 Then verify the gate covers everything, not just the HTML. In the incognito window before logging in, try loading a framework file directly:
 
+```text
+https://your-app.<subdomain>.workers.dev/_framework/dotnet.<hash>.js
 ```
-https://your-app.<subdomain>.workers.dev/_framework/dotnet.js
-```
+
+Use the real filename — .NET fingerprints these, so it's `dotnet.6bj9a4to55.js`, not `dotnet.js`. Copy it out of your published `index.html`. This matters for the test to mean anything: a path that doesn't exist gets caught by `not_found_handling` and comes back as `200 text/html` (your `index.html`), which looks like a successful fetch and tells you nothing about Access.
 
 You should be redirected to login rather than getting the file. Access authenticates at the edge before any asset is served — that's what makes this genuinely private rather than merely obscure. Worth confirming with your own eyes once.
 
@@ -231,6 +255,33 @@ This is the part that wastes people's afternoons, so it's worth knowing before i
 
 There are two different service worker files in the project: `service-worker.js` (development, deliberately does nothing) and `service-worker.published.js` (the real caching one, used only in published builds). If you're testing caching behavior, you must test a published build — `dotnet run` won't exercise it.
 
+### A corollary worth internalizing
+
+The service worker updates only when the **bytes of `service-worker.js` change**. Fix a *server-side* problem — a wrangler setting, a header, a redirect — and the bytes don't change, so the browser never re-runs `install` and the poisoned cache survives your fix indefinitely. The deploy is correct and the browser still shows the old failure.
+
+So when you change hosting configuration, always verify in a browser whose site data you just cleared. Otherwise you'll conclude the fix didn't work, and go change something that wasn't broken.
+
+Useful in the console when you'd rather not click through DevTools:
+
+```js
+for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+for (const k of await caches.keys()) await caches.delete(k);
+```
+
+Then reload.
+
+### Diagnosing this class of bug
+
+Both service-worker failures in this guide were found the same way, and the technique generalizes: **compare what the server sends against what the browser receives.**
+
+```bash
+curl -s -o /dev/null -w "%{http_code} %{content_type}\n" https://your-app.workers.dev/_framework/dotnet.<hash>.js
+```
+
+If `curl` is clean and the browser is broken, the problem is on the client — service worker, cache, or an installed PWA — and no amount of redeploying will move it. If `curl` is also wrong, it's the hosting config.
+
+The sharpest single signal: **if navigation requests fail while every other request to the same origin succeeds, it's the service worker.** `service-worker.published.js` is the only thing in the stack that branches on `request.mode === 'navigate'`.
+
 ---
 
 ## Troubleshooting
@@ -241,6 +292,7 @@ There are two different service worker files in the project: `service-worker.js`
 | Deploy fails: "Invalid `_redirects` configuration ... Infinite loop detected" | A `/* /index.html 200` catch-all in the published output | Delete `wwwroot/_redirects` **and** the stale copy already in `publish/wwwroot` — a plain `dotnet publish` won't remove it |
 | "You need a workers.dev subdomain" | Account not fully initialized | Open Workers & Pages in the dashboard once |
 | Deploy succeeds, site is stale | Service worker cache | Update on reload, or unregister |
+| `ERR_FAILED` on a normal load, but Ctrl+F5 works every time | Service worker cached a *redirected* `index.html`, which a navigation request can't be served | Set `"html_handling": "none"` (Step 2.2), redeploy, then clear site data once |
 | Deploy uploads almost nothing | `assets.directory` wrong | Must point at `publish/wwwroot`, not `publish` or `wwwroot` |
 | Site loads without login prompt | Testing in an already-authenticated browser | Use incognito |
 | Very slow first load | Full .NET runtime download | Expected. See optimization below |
