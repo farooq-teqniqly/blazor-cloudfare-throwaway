@@ -54,7 +54,7 @@ Open the URL it prints. You should see the default counter app. Confirm this wor
 
 Edit `Pages/Home.razor` and add something obvious like a version string or timestamp. When you deploy, this tells you at a glance whether you're seeing fresh content or a cached copy. Service workers make this question come up constantly.
 
-### Step 1.4: Do *not* add a `_redirects` file
+### Step 1.4: Do _not_ add a `_redirects` file
 
 SPA routing still has to be solved — navigating directly to `/counter` or refreshing on that route would otherwise 404, because the server looks for a physical file at that path and finds nothing. But on Workers you solve it in `wrangler.jsonc` (Step 2.2), not with a `_redirects` file.
 
@@ -74,7 +74,7 @@ Line 1: Infinite loop detected in this rule. This would cause a redirect to stri
 
 Workers normalizes asset paths by stripping `.html` and `/index`, so a catch-all pointing at `/index.html` normalizes back to `/`, which re-matches `/*`. The validator catches this at deploy time and refuses the whole deployment.
 
-`_redirects` and `_headers` *are* supported by Workers static assets, and remain useful for genuine redirects and custom headers. The catch-all SPA rewrite specifically is the thing that doesn't carry over — `not_found_handling` replaces it.
+`_redirects` and `_headers` _are_ supported by Workers static assets, and remain useful for genuine redirects and custom headers. The catch-all SPA rewrite specifically is the thing that doesn't carry over — `not_found_handling` replaces it.
 
 ### Step 1.5: Publish
 
@@ -99,7 +99,7 @@ wrangler login
 
 This opens a browser for OAuth. If the account list looks wrong afterward, `wrangler whoami` confirms which account you're pointed at.
 
-> **First-time accounts:** if deploy fails with *"You need a workers.dev subdomain in order to proceed,"* log into the Cloudflare dashboard and open the Workers & Pages section once. Visiting that page provisions the subdomain. It's a known rough edge in the onboarding flow.
+> **First-time accounts:** if deploy fails with _"You need a workers.dev subdomain in order to proceed,"_ log into the Cloudflare dashboard and open the Workers & Pages section once. Visiting that page provisions the subdomain. It's a known rough edge in the onboarding flow.
 
 ### Step 2.2: Create the Wrangler config
 
@@ -112,8 +112,8 @@ Create `wrangler.jsonc` in the **project root** (next to the `.csproj`, not insi
   "assets": {
     "directory": "./bin/Release/net10.0/publish/wwwroot",
     "not_found_handling": "single-page-application",
-    "html_handling": "none"
-  }
+    "html_handling": "none",
+  },
 }
 ```
 
@@ -122,14 +122,14 @@ Notes on each field:
 - **`name`** becomes your subdomain: `workout-spike.<your-subdomain>.workers.dev`
 - **`compatibility_date`** pins runtime behavior. Set it to today's date and leave it alone. Bumping it later opts into behavior changes, which is a deliberate act, not a routine update
 - **`assets.directory`** replaces what Pages called the "build output directory"
-- **`not_found_handling`** is the Workers-native SPA fallback: any path that doesn't match a physical asset is served `index.html`, and Blazor's router takes it from there. This is the *only* place SPA routing gets configured — it is not belt-and-suspenders with a `_redirects` catch-all, because that combination doesn't deploy at all (Step 1.4)
+- **`not_found_handling`** is the Workers-native SPA fallback: any path that doesn't match a physical asset is served `index.html`, and Blazor's router takes it from there. This is the _only_ place SPA routing gets configured — it is not belt-and-suspenders with a `_redirects` catch-all, because that combination doesn't deploy at all (Step 1.4)
 - **`html_handling`** is not optional for a Blazor PWA. Read the next section before you skip it
 
 #### Why `html_handling: "none"` is mandatory here
 
 By default, Workers static assets "prettifies" URLs: a request for `/index.html` gets a **307 redirect to `/`**. Harmless for most sites. For a Blazor PWA it is fatal, and the failure looks nothing like its cause.
 
-`service-worker.published.js` caches the app shell under the literal key `index.html`. With the redirect in place, the cached `Response` is a *followed* redirect — `redirected: true`. On every subsequent navigation the service worker hands that response to `event.respondWith()`, and the browser rejects it: a redirected response may not be returned for a navigation request. The navigation dies with **`ERR_FAILED`**.
+`service-worker.published.js` caches the app shell under the literal key `index.html`. With the redirect in place, the cached `Response` is a _followed_ redirect — `redirected: true`. On every subsequent navigation the service worker hands that response to `event.respondWith()`, and the browser rejects it: a redirected response may not be returned for a navigation request. The navigation dies with **`ERR_FAILED`**.
 
 The symptom that makes this hard to place:
 
@@ -178,8 +178,8 @@ Or just keep a shell script. Either beats retyping two commands.
 
 1. Cloudflare dashboard → **Workers & Pages**
 2. Select your Worker
-3. **Settings** → **Domains & Routes**
-4. Next to the `workers.dev` entry, click **Enable Cloudflare Access**
+3. Click **Domains**
+4. For both **Production** and **Preview** URL's, change **Public** to **Restricted**.
 
 This creates an Access application in front of the URL, defaulting to your account email. That's often all you need.
 
@@ -192,7 +192,7 @@ Click **Manage Cloudflare Access** to open the Zero Trust dashboard, where you c
 
 Add other addresses here if you ever want to share the app.
 
-> Cloudflare changed this in late 2025 so the one-click button creates *reusable* Access policies rather than a duplicate policy per resource. If you protect several Workers, they can share one policy — edit it once, applies everywhere.
+> Cloudflare changed this in late 2025 so the one-click button creates _reusable_ Access policies rather than a duplicate policy per resource. If you protect several Workers, they can share one policy — edit it once, applies everywhere.
 
 ### Step 3.3: Set a long session duration
 
@@ -257,14 +257,15 @@ There are two different service worker files in the project: `service-worker.js`
 
 ### A corollary worth internalizing
 
-The service worker updates only when the **bytes of `service-worker.js` change**. Fix a *server-side* problem — a wrangler setting, a header, a redirect — and the bytes don't change, so the browser never re-runs `install` and the poisoned cache survives your fix indefinitely. The deploy is correct and the browser still shows the old failure.
+The service worker updates only when the **bytes of `service-worker.js` change**. Fix a _server-side_ problem — a wrangler setting, a header, a redirect — and the bytes don't change, so the browser never re-runs `install` and the poisoned cache survives your fix indefinitely. The deploy is correct and the browser still shows the old failure.
 
 So when you change hosting configuration, always verify in a browser whose site data you just cleared. Otherwise you'll conclude the fix didn't work, and go change something that wasn't broken.
 
 Useful in the console when you'd rather not click through DevTools:
 
 ```js
-for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+for (const r of await navigator.serviceWorker.getRegistrations())
+  await r.unregister();
 for (const k of await caches.keys()) await caches.delete(k);
 ```
 
@@ -286,16 +287,16 @@ The sharpest single signal: **if navigation requests fail while every other requ
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| 404 on refresh at any route | SPA fallback not configured | Check `not_found_handling` is set in `wrangler.jsonc` |
-| Deploy fails: "Invalid `_redirects` configuration ... Infinite loop detected" | A `/* /index.html 200` catch-all in the published output | Delete `wwwroot/_redirects` **and** the stale copy already in `publish/wwwroot` — a plain `dotnet publish` won't remove it |
-| "You need a workers.dev subdomain" | Account not fully initialized | Open Workers & Pages in the dashboard once |
-| Deploy succeeds, site is stale | Service worker cache | Update on reload, or unregister |
-| `ERR_FAILED` on a normal load, but Ctrl+F5 works every time | Service worker cached a *redirected* `index.html`, which a navigation request can't be served | Set `"html_handling": "none"` (Step 2.2), redeploy, then clear site data once |
-| Deploy uploads almost nothing | `assets.directory` wrong | Must point at `publish/wwwroot`, not `publish` or `wwwroot` |
-| Site loads without login prompt | Testing in an already-authenticated browser | Use incognito |
-| Very slow first load | Full .NET runtime download | Expected. See optimization below |
+| Symptom                                                                       | Cause                                                                                         | Fix                                                                                                                        |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 404 on refresh at any route                                                   | SPA fallback not configured                                                                   | Check `not_found_handling` is set in `wrangler.jsonc`                                                                      |
+| Deploy fails: "Invalid `_redirects` configuration ... Infinite loop detected" | A `/* /index.html 200` catch-all in the published output                                      | Delete `wwwroot/_redirects` **and** the stale copy already in `publish/wwwroot` — a plain `dotnet publish` won't remove it |
+| "You need a workers.dev subdomain"                                            | Account not fully initialized                                                                 | Open Workers & Pages in the dashboard once                                                                                 |
+| Deploy succeeds, site is stale                                                | Service worker cache                                                                          | Update on reload, or unregister                                                                                            |
+| `ERR_FAILED` on a normal load, but Ctrl+F5 works every time                   | Service worker cached a _redirected_ `index.html`, which a navigation request can't be served | Set `"html_handling": "none"` (Step 2.2), redeploy, then clear site data once                                              |
+| Deploy uploads almost nothing                                                 | `assets.directory` wrong                                                                      | Must point at `publish/wwwroot`, not `publish` or `wwwroot`                                                                |
+| Site loads without login prompt                                               | Testing in an already-authenticated browser                                                   | Use incognito                                                                                                              |
+| Very slow first load                                                          | Full .NET runtime download                                                                    | Expected. See optimization below                                                                                           |
 
 ---
 
@@ -312,7 +313,7 @@ The default publish is several megabytes. If first-load size bothers you:
 
 Trimming strips unreferenced IL. `InvariantGlobalization` drops ICU data, which is a large chunk — safe if you never format dates or numbers for non-English locales, which for a personal workout app you won't.
 
-Do this *after* everything works. Trimming can break reflection-based code in ways that only surface at runtime, and you don't want to be debugging that simultaneously with deployment issues.
+Do this _after_ everything works. Trimming can break reflection-based code in ways that only surface at runtime, and you don't want to be debugging that simultaneously with deployment issues.
 
 ---
 
