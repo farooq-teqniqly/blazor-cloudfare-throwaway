@@ -362,12 +362,16 @@ jobs:
 
       - name: Deploy
         # Pinned to a SHA rather than a floating tag: this is the step that handles the
-        # Cloudflare API token. SHA is the v3 tag as of 2026-08-02.
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
+        # Cloudflare API token. SHA is the v4 tag as of 2026-08-02.
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: WorkoutSpike
+          # wrangler.jsonc has no `main` -- a static-assets-only deploy, which wrangler 3
+          # rejects with "Missing entry-point". The v3 action defaulted to wrangler 3.90.0
+          # and failed on that. Pinned rather than floating so CI matches the local CLI.
+          wranglerVersion: "4.118.0"
 ```
 
 The load-bearing details:
@@ -376,8 +380,26 @@ The load-bearing details:
 - **`if: github.ref == 'refs/heads/main'`** exists because `wrangler.jsonc` names one fixed Worker. Without the gate, a manual dispatch from a feature branch silently overwrites production with unmerged code. Only users with write access can dispatch, so this is a footgun rather than an access-control hole -- but it is a cheap one to remove
 - **`concurrency`** serializes deploys. `cancel-in-progress: false` is deliberate: canceling a deploy mid-asset-upload is worse than queuing behind it
 - **`permissions: contents: read`** drops the default write token. The job only reads the repo; Cloudflare auth is the secret, not the GitHub token
-- **The SHA pin** on `wrangler-action` is the one action receiving your Cloudflare token, so a moved tag has the largest blast radius. Re-resolve with `gh api repos/cloudflare/wrangler-action/git/ref/tags/v3 --jq .object.sha`, or point Dependabot at the workflow
+- **The SHA pin** on `wrangler-action` is the one action receiving your Cloudflare token, so a moved tag has the largest blast radius. Re-resolve with `gh api repos/cloudflare/wrangler-action/git/ref/tags/v4 --jq .object.sha`, or point Dependabot at the workflow
+- **`wranglerVersion`** is not optional here, and getting it wrong produces a failure that looks like a config error. See below
 - **The `_redirects` cleanup** is belt-and-suspenders. A CI checkout starts clean, so the stale-copy problem from Step 1.4 cannot happen here -- the step is there so that a local `publish` folder restored from a cache never reintroduces it. `rm -f` exits 0 when the file is absent, so it is a no-op in the normal case
+
+#### Why the wrangler version is pinned
+
+The first CI deploy failed here, and the error points somewhere misleading:
+
+```text
+✘ [ERROR] Missing entry-point: The entry-point should be specified via the command
+line (e.g. `wrangler deploy path/to/script`) or the `main` config field.
+```
+
+That reads like a broken `wrangler.jsonc`. It is not. **Step 2.2 deliberately omits `main`** -- that is what makes this a pure static-asset deployment. Wrangler 3 does not support that shape and demands an entry point; wrangler 4 does.
+
+`cloudflare/wrangler-action@v3` defaults to installing **wrangler 3.90.0**, so the deploy fails even though the identical `wrangler deploy` succeeds on your machine, where `npm install -g wrangler` gave you 4.x. Nothing in the error mentions a version.
+
+Two things follow. Use **`wrangler-action@v4`**, which defaults to a wrangler 4 line. And pin `wranglerVersion` to the same version you run locally, so CI and your machine cannot diverge -- a floating version turns a future wrangler major into a surprise deploy failure on an unrelated commit.
+
+Check what you are matching against with `npx wrangler --version`.
 
 ### Step 6.4: The dispatch trap
 
@@ -424,6 +446,7 @@ Also worth knowing: `.wrangler/` in the project directory is machine-local state
 | `gh workflow run` returns `HTTP 404` for a workflow that exists               | `workflow_dispatch` requires the file on the default branch                                   | Merge to `main` first (Step 6.4), or add the branch to the push trigger temporarily                                        |
 | Actions run is green but the job says "skipped"                               | The `main`-only gate, on a dispatch from another ref                                          | Expected. Only `main` deploys (Step 6.3)                                                                                   |
 | CI deploy fails with 403 from Cloudflare                                      | API token scope too narrow, or scoped to the wrong account                                    | Re-create with the **Edit Cloudflare Workers** template, restricted to one account (Step 6.1)                              |
+| CI deploy fails: "Missing entry-point", but local `wrangler deploy` works     | `wrangler-action@v3` installs wrangler 3, which rejects a no-`main` static-asset deploy       | Use `wrangler-action@v4` and pin `wranglerVersion` to your local version (Step 6.3)                                        |
 
 ---
 

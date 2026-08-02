@@ -35,9 +35,13 @@ jobs:
 
       - name: Deploy
         # Pinned to a SHA rather than a floating tag: this is the step that handles the
-        # Cloudflare API token. SHA is the v3 tag as of 2026-08-02.
-        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
+        # Cloudflare API token. SHA is the v4 tag as of 2026-08-02.
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: WorkoutSpike
+          # wrangler.jsonc has no `main` -- a static-assets-only deploy, which wrangler 3
+          # rejects with "Missing entry-point". The v3 action defaulted to wrangler 3.90.0
+          # and failed on that. Pinned rather than floating so CI matches the local CLI.
+          wranglerVersion: "4.118.0"
