@@ -50,9 +50,73 @@ dotnet run
 
 Open the URL it prints. You should see the default counter app. Confirm this works before deploying — you want to isolate "app is broken" from "deployment is broken."
 
-### Step 1.3: Add a visible marker
+### Step 1.3: Add a visible build marker
 
-Edit `Pages/Home.razor` and add something obvious like a version string or timestamp. When you deploy, this tells you at a glance whether you're seeing fresh content or a cached copy. Service workers make this question come up constantly.
+You want a string on screen that tells you, at a glance, exactly which build you are looking at. Service workers make that question come up constantly, and later parts of this guide lean on it repeatedly.
+
+**Generate it at build time.** A hardcoded `"v3"` that you forget to bump lies precisely when you need it most -- while you are staring at a stale page trying to work out whether the deploy took.
+
+The useful pair is a **short git SHA plus a UTC build time**. The SHA maps a running page back to a commit and to a CI run; the timestamp is what you actually read.
+
+Add to the `.csproj`:
+
+```xml
+<PropertyGroup>
+  <BuildStamp Condition="'$(BuildStamp)' == ''">$([System.DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm"))</BuildStamp>
+  <GitSha Condition="'$(GitSha)' == ''">local</GitSha>
+</PropertyGroup>
+
+<ItemGroup>
+  <AssemblyMetadata Include="BuildStamp" Value="$(BuildStamp)" />
+  <AssemblyMetadata Include="GitSha" Value="$(GitSha)" />
+</ItemGroup>
+```
+
+Defaulting `GitSha` to `local` is deliberate: a build from your machine is then visibly different from one CI deployed.
+
+`BuildInfo.cs`:
+
+```csharp
+namespace WorkoutSpike;
+
+/// <summary>
+/// Exposes build-time provenance so a rendered page can be traced to a commit.
+/// </summary>
+internal static class BuildInfo
+{
+    /// <summary>Gets the short commit SHA, or "local" for a developer build.</summary>
+    public static string Sha { get; } = Read("GitSha");
+
+    /// <summary>Gets the UTC build time, formatted as yyyy-MM-dd HH:mm.</summary>
+    public static string Stamp { get; } = Read("BuildStamp");
+
+    private static string Read(string key) =>
+        typeof(BuildInfo).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => string.Equals(a.Key, key, StringComparison.Ordinal))
+            ?.Value ?? "unknown";
+}
+```
+
+Render it in **`Layout/MainLayout.razor`**, not `Pages/Home.razor`:
+
+```razor
+<footer class="build-marker">@BuildInfo.Sha · @BuildInfo.Stamp UTC</footer>
+```
+
+The layout is the right home for it. On the home page the marker is only visible if routing works and you happen to be on `/` -- which excludes most of the situations you would be debugging.
+
+Reading the result:
+
+| Marker shows      | Meaning                                                            |
+| ----------------- | ------------------------------------------------------------------ |
+| `local`           | You are on a local build, or never deployed the change             |
+| An older SHA      | Service worker is serving a cache that outlived the build          |
+| The current SHA   | The deploy is fine; your problem is somewhere else                 |
+
+If you deploy from CI, the publish step has to pass the real SHA -- see Step 6.3.
+
+> **If you later enable trimming** (see the optimization section at the end), verify the marker still renders. ILLink can drop custom attributes it considers unreachable, and an `AssemblyMetadataAttribute` read purely by reflection is the shape most at risk. Publish trimmed once and look at the footer.
 
 ### Step 1.4: Do _not_ add a `_redirects` file
 
@@ -382,6 +446,12 @@ The load-bearing details:
 - **`permissions: contents: read`** drops the default write token. The job only reads the repo; Cloudflare auth is the secret, not the GitHub token
 - **The SHA pin** on `wrangler-action` is the one action receiving your Cloudflare token, so a moved tag has the largest blast radius. Re-resolve with `gh api repos/cloudflare/wrangler-action/git/ref/tags/v4 --jq .object.sha`, or point Dependabot at the workflow
 - **`wranglerVersion`** is not optional here, and getting it wrong produces a failure that looks like a config error. See below
+- **If you added the build marker** from Step 1.3, the publish step must pass the SHA, or every CI deploy is stamped `local`:
+
+  ```yaml
+  - name: Publish
+    run: dotnet publish WorkoutSpike/WorkoutSpike.csproj -c Release -p:GitSha=$(git rev-parse --short HEAD)
+  ```
 - **The `_redirects` cleanup** is belt-and-suspenders. A CI checkout starts clean, so the stale-copy problem from Step 1.4 cannot happen here -- the step is there so that a local `publish` folder restored from a cache never reintroduces it. `rm -f` exits 0 when the file is absent, so it is a no-op in the normal case
 
 #### Why the wrangler version is pinned
