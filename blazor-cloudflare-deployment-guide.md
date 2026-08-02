@@ -54,17 +54,27 @@ Open the URL it prints. You should see the default counter app. Confirm this wor
 
 Edit `Pages/Home.razor` and add something obvious like a version string or timestamp. When you deploy, this tells you at a glance whether you're seeing fresh content or a cached copy. Service workers make this question come up constantly.
 
-### Step 1.4: Add the SPA routing file
+### Step 1.4: Do *not* add a `_redirects` file
 
-Create `wwwroot/_redirects` with exactly this line:
+SPA routing still has to be solved — navigating directly to `/counter` or refreshing on that route would otherwise 404, because the server looks for a physical file at that path and finds nothing. But on Workers you solve it in `wrangler.jsonc` (Step 2.2), not with a `_redirects` file.
 
-```
+If you're porting from a Pages guide, you will have seen this instruction:
+
+```text
 /* /index.html 200
 ```
 
-Without it, navigating directly to `/counter` or refreshing on that route returns a 404, because the server looks for a physical file at that path and finds nothing. The rule tells Cloudflare to serve `index.html` for any unmatched path and let Blazor's router handle it client-side.
+**That rule is rejected by Workers static assets.** Deploy fails with:
 
-`_redirects` and `_headers` are supported natively by Workers static assets, same as they were on Pages. The file must live inside the published static directory — putting it in `wwwroot` accomplishes that, since `wwwroot` is what gets published.
+```text
+Invalid _redirects configuration:
+Line 1: Infinite loop detected in this rule. This would cause a redirect to strip
+`.html` or `/index` and end up triggering this rule again. [code: 100324]
+```
+
+Workers normalizes asset paths by stripping `.html` and `/index`, so a catch-all pointing at `/index.html` normalizes back to `/`, which re-matches `/*`. The validator catches this at deploy time and refuses the whole deployment.
+
+`_redirects` and `_headers` *are* supported by Workers static assets, and remain useful for genuine redirects and custom headers. The catch-all SPA rewrite specifically is the thing that doesn't carry over — `not_found_handling` replaces it.
 
 ### Step 1.5: Publish
 
@@ -111,7 +121,7 @@ Notes on each field:
 - **`name`** becomes your subdomain: `workout-spike.<your-subdomain>.workers.dev`
 - **`compatibility_date`** pins runtime behavior. Set it to today's date and leave it alone. Bumping it later opts into behavior changes, which is a deliberate act, not a routine update
 - **`assets.directory`** replaces what Pages called the "build output directory"
-- **`not_found_handling`** is the Workers-native equivalent of the `_redirects` rule. Having both is belt-and-suspenders — harmless, and it means the app still routes correctly if you ever move it to a different static host
+- **`not_found_handling`** is the Workers-native SPA fallback: any path that doesn't match a physical asset is served `index.html`, and Blazor's router takes it from there. This is the *only* place SPA routing gets configured — it is not belt-and-suspenders with a `_redirects` catch-all, because that combination doesn't deploy at all (Step 1.4)
 
 There's no `main` field. That's intentional: without one, this is a pure static asset deployment with no Worker script. You'd add `main` only if you later wanted server-side logic, which this app doesn't need.
 
@@ -227,7 +237,8 @@ There are two different service worker files in the project: `service-worker.js`
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| 404 on refresh at any route | SPA fallback not configured | Check `_redirects` is in the published output and `not_found_handling` is set |
+| 404 on refresh at any route | SPA fallback not configured | Check `not_found_handling` is set in `wrangler.jsonc` |
+| Deploy fails: "Invalid `_redirects` configuration ... Infinite loop detected" | A `/* /index.html 200` catch-all in the published output | Delete `wwwroot/_redirects` **and** the stale copy already in `publish/wwwroot` — a plain `dotnet publish` won't remove it |
 | "You need a workers.dev subdomain" | Account not fully initialized | Open Workers & Pages in the dashboard once |
 | Deploy succeeds, site is stale | Service worker cache | Update on reload, or unregister |
 | Deploy uploads almost nothing | `assets.directory` wrong | Must point at `publish/wwwroot`, not `publish` or `wwwroot` |

@@ -1,0 +1,8 @@
+{
+  "name": "workout-spike",
+  "compatibility_date": "2026-08-01",
+  "assets": {
+    "directory": "./bin/Release/net10.0/publish/wwwroot",
+    "not_found_handling": "single-page-application"
+  }
+}
